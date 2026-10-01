@@ -44,12 +44,12 @@ model_files = struct('name', model_names, 'isdir', num2cell(false(size(model_nam
 %
 nModels = numel(model_files);
 
-dietNames = {'high_fiber_vmh', 'Mediterranian', 'Unhealthy', 'vegetarian_diet', 'Western_VMH', 'No_Diet'};
+dietNames = {'High_Fiber', 'Western'};
 nDiets = numel(dietNames);
-DietTables = cell(nDiets-1, 1);
+DietTables = cell(nDiets, 1);
 
 % Load dietary constraints from text files
-for d = 1:nDiets-1
+for d = 1:nDiets
     file = fullfile(diet_dir, [dietNames{d} '.txt']);
     T = readtable(file, 'FileType', 'text', 'Delimiter', '\t', 'ReadVariableNames', false);
     DietTables{d}.rxns = strrep(strtrim(string(T{:,1})), '[u]', '(e)');
@@ -131,16 +131,21 @@ parfor m = 1:nModels
             tempModel = currentModel;
             ex_idx = find(startsWith(tempModel.rxns, 'EX_'));
             tempModel.lb(ex_idx) = -1000;
-            tempModel.lb(tempModel.c == 1) = 0.05;
-            tempModel.c(:) = 0;
-            tempModel.c(ex_idx) = 1; 
-            tempModel.osense = -1; % maximize sum of exchanges -> minimize uptake
             
             try
-                sol = optimizeCbModel(tempModel, 'max', 'one');
-                if sol.stat == 1
-                    % We found lacking media
-                    missing_ex = tempModel.rxns(sol.v < -1e-6 & startsWith(tempModel.rxns, 'EX_'));
+                % Use the COBRA toolbox minimalMedium function
+                bioRxn = tempModel.rxns{tempModel.c == 1};
+                [minMed, ~] = minimalMedium(tempModel, bioRxn, 0.05);
+                
+                if ~isempty(minMed)
+                    if isstruct(minMed)
+                        missing_ex = fieldnames(minMed);
+                    elseif iscell(minMed)
+                        missing_ex = minMed;
+                    end
+                    
+                    % Isolate exchanges and supplement diet
+                    missing_ex = missing_ex(startsWith(missing_ex, 'EX_'));
                     currentModel = changeRxnBounds(currentModel, missing_ex, -10, 'l');
                     WTsol = optimizeCbModel(currentModel, 'max', 'one');
                     status_init = 'Supplemented';
@@ -161,8 +166,6 @@ parfor m = 1:nModels
         
         WTgrowth = WTsol.f; 
         WTRxns = numel(currentModel.rxns); 
-        st = 0.05; 
-        
         % Identify Non-Growth Associated Maintenance (NGAM) reaction
         atp_candidates = {'ATPM', 'rxn00062', 'NGAM', 'ATPM_c', 'maintenance', 'DM_atp_c_'};
         found_atpm = intersect(atp_candidates, currentModel.rxns, 'stable');
@@ -171,41 +174,38 @@ parfor m = 1:nModels
             atpRxn = found_atpm{1}; 
         end
         
-        % Note: Ensure minReact.m does not contain initCobraToolbox or changeCobraSolver('ibm_cplex') as it resets settings.
+        eliList = {};
+        if ~isempty(atpRxn)
+            eliList = {atpRxn};
+        end
         
-        % Calculate MRM-strict
-        eliList_strict = {};
-        if ~isempty(atpRxn)
-            eliList_strict = {atpRxn};
-        end
-        [mrm_strict_model, mrm_strict_growth, mrm_strict_rxns, mrm_strict_status, Jmin_strict] = ...
-            get_minimal_reactome(currentModel, st, WTgrowth, eliList_strict);
+        % Calculate MRM with GrowthRateCutoff = 1 (strict)
+        st_cut1 = 1.0;
+        [mrm_cut1_model, mrm_cut1_growth, mrm_cut1_rxns, mrm_cut1_status, Jmin_cut1] = ...
+            get_minimal_reactome(currentModel, st_cut1, WTgrowth, eliList);
             
-        % Calculate MRM-eco
-        eliList_eco = currentModel.rxns(startsWith(currentModel.rxns, 'EX_') | contains(currentModel.rxns, '[e]') | contains(currentModel.rxns, '(e)'));
-        if ~isempty(atpRxn)
-            eliList_eco = unique([eliList_eco; {atpRxn}]);
-        end
-        [mrm_eco_model, mrm_eco_growth, mrm_eco_rxns, mrm_eco_status, Jmin_eco] = ...
-            get_minimal_reactome(currentModel, st, WTgrowth, eliList_eco);
+        % Calculate MRM with GrowthRateCutoff = 0.5 (relaxed)
+        st_cut05 = 0.5;
+        [mrm_cut05_model, mrm_cut05_growth, mrm_cut05_rxns, mrm_cut05_status, Jmin_cut05] = ...
+            get_minimal_reactome(currentModel, st_cut05, WTgrowth, eliList);
             
         if strcmp(status_init, 'Supplemented')
-            if strcmp(mrm_strict_status, 'PASS') || strcmp(mrm_strict_status, 'SuboptimalMRM') || strcmp(mrm_strict_status, 'Unreducible')
-                mrm_strict_status = ['Supplemented_' mrm_strict_status];
+            if strcmp(mrm_cut1_status, 'PASS') || strcmp(mrm_cut1_status, 'SuboptimalMRM') || strcmp(mrm_cut1_status, 'Unreducible')
+                mrm_cut1_status = ['Supplemented_' mrm_cut1_status];
             end
-            if strcmp(mrm_eco_status, 'PASS') || strcmp(mrm_eco_status, 'SuboptimalMRM') || strcmp(mrm_eco_status, 'Unreducible')
-                mrm_eco_status = ['Supplemented_' mrm_eco_status];
+            if strcmp(mrm_cut05_status, 'PASS') || strcmp(mrm_cut05_status, 'SuboptimalMRM') || strcmp(mrm_cut05_status, 'Unreducible')
+                mrm_cut05_status = ['Supplemented_' mrm_cut05_status];
             end
         end
         
-        saveStruct = struct('minimalModel_strict', mrm_strict_model, 'minimalModel_eco', mrm_eco_model, ...
-            'WTgrowth', WTgrowth, 'MRMgrowth_strict', mrm_strict_growth, 'MRMgrowth_eco', mrm_eco_growth, ...
-            'WTRxns', WTRxns, 'MRMRxns_strict', mrm_strict_rxns, 'MRMRxns_eco', mrm_eco_rxns, ...
-            'modelName', modelName, 'dietName', dietName, 'status_strict', mrm_strict_status, 'status_eco', mrm_eco_status, ...
-            'Jmin_strict', Jmin_strict, 'Jmin_eco', Jmin_eco);
+        saveStruct = struct('minimalModel_cut1', mrm_cut1_model, 'minimalModel_cut05', mrm_cut05_model, ...
+            'WTgrowth', WTgrowth, 'MRMgrowth_cut1', mrm_cut1_growth, 'MRMgrowth_cut05', mrm_cut05_growth, ...
+            'WTRxns', WTRxns, 'MRMRxns_cut1', mrm_cut1_rxns, 'MRMRxns_cut05', mrm_cut05_rxns, ...
+            'modelName', modelName, 'dietName', dietName, 'status_cut1', mrm_cut1_status, 'status_cut05', mrm_cut05_status, ...
+            'Jmin_cut1', Jmin_cut1, 'Jmin_cut05', Jmin_cut05);
         parsave(saveFile, saveStruct);
         
-        localResults(d,:) = {modelName, dietName, WTgrowth, WTRxns, mrm_strict_growth, mrm_strict_rxns, mrm_eco_growth, mrm_eco_rxns, mrm_strict_status, mrm_eco_status};
+        localResults(d,:) = {modelName, dietName, WTgrowth, WTRxns, mrm_cut1_growth, mrm_cut1_rxns, mrm_cut05_growth, mrm_cut05_rxns, mrm_cut1_status, mrm_cut05_status};
     end
     fprintf('%s processed in %.2f mins.\n', modelName, toc(ModelTimer)/60);
     ParpoolResults{m} = localResults;
@@ -219,28 +219,28 @@ fprintf('ALL MODELS COMPLETED\nTotal Time : %.2f minutes\n', Elapsed/60);
 
 % Aggregate and export analytical results
 if ~isempty(MasterResults)
-    ResultTable = cell2table(MasterResults, 'VariableNames', {'Model','Diet','WTGrowth','WTRxns','MRM_strict_Growth','MRM_strict_Rxns','MRM_eco_Growth','MRM_eco_Rxns','Status_strict','Status_eco'});
+    ResultTable = cell2table(MasterResults, 'VariableNames', {'Model','Diet','WTGrowth','WTRxns','MRM_cut1_Growth','MRM_cut1_Rxns','MRM_cut05_Growth','MRM_cut05_Rxns','Status_cut1','Status_cut05'});
     writetable(ResultTable, fullfile(output_dir, 'minReactModels_Summary.csv'));
     
     models = unique(string(ResultTable.Model), 'stable');
     WideTable = table(models(:), 'VariableNames', {'Model'});
-    dietShort = {'HF','MED','UNH','VEG','WES','NOD'};
+    dietShort = {'HF','WES'};
     
     for d = 1:numel(dietNames)
         wt = nan(height(WideTable),1); 
-        mrm_strict = nan(height(WideTable),1);
-        mrm_eco = nan(height(WideTable),1);
+        mrm_cut1 = nan(height(WideTable),1);
+        mrm_cut05 = nan(height(WideTable),1);
         for i = 1:height(WideTable)
             idx = strcmp(string(ResultTable.Model), string(WideTable.Model(i))) & strcmp(string(ResultTable.Diet), string(dietNames{d}));
             if any(idx)
                 wt(i)  = ResultTable.WTGrowth(idx);
-                mrm_strict(i) = ResultTable.MRM_strict_Growth(idx);
-                mrm_eco(i) = ResultTable.MRM_eco_Growth(idx);
+                mrm_cut1(i) = ResultTable.MRM_cut1_Growth(idx);
+                mrm_cut05(i) = ResultTable.MRM_cut05_Growth(idx);
             end
         end
         WideTable.([dietShort{d} '_WT'])  = wt;
-        WideTable.([dietShort{d} '_MRM_strict']) = mrm_strict;
-        WideTable.([dietShort{d} '_MRM_eco']) = mrm_eco;
+        WideTable.([dietShort{d} '_MRM_cut1']) = mrm_cut1;
+        WideTable.([dietShort{d} '_MRM_cut05']) = mrm_cut05;
     end
     wideFile = fullfile(output_dir, 'minReactModels_WideSummary.csv');
     writetable(WideTable, wideFile);

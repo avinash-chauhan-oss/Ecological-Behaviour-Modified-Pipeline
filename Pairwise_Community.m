@@ -48,23 +48,19 @@ nModels = numel(model_files);
 Pairs = nchoosek(1:nModels, 2);
 nPairs = size(Pairs, 1);
 
-dietNames = {'Unsupplemented'};
+dietNames = {'High_Fiber', 'Western'};
 nDiets = numel(dietNames);
 DietTables = cell(nDiets, 1);
 
-% Load Diet Constraints
+% Load Unsupplemented Diet Constraints directly from txt files
 for d = 1:nDiets
-    if strcmp(dietNames{d}, 'Unsupplemented')
-        DietTables{d}.rxns = [];
-        DietTables{d}.lbs  = [];
-        continue;
-    end
-    
     file = fullfile(diet_dir, [dietNames{d} '.txt']);
-    T = readtable(file, 'FileType', 'text', 'Delimiter', '\t', 'ReadVariableNames', false);
-    rxns = strrep(strtrim(string(T{:,1})), '[u]', '(e)');
-    DietTables{d}.rxns = rxns;
-    DietTables{d}.lbs  = T{:,2};
+    if exist(file, 'file')
+        T = readtable(file, 'FileType', 'text', 'Delimiter', '\t', 'ReadVariableNames', false);
+        rxns = strrep(strtrim(string(T{:,1})), '[u]', '(e)');
+        DietTables{d}.rxns = rxns;
+        DietTables{d}.lbs  = T{:,2};
+    end
 end
 
 % Construct Output Headers
@@ -77,12 +73,18 @@ for d = 1:nDiets
     headers{end+1} = sprintf('WT_M1_Max_%s', dn);
     headers{end+1} = sprintf('WT_M2_Min_%s', dn);
     headers{end+1} = sprintf('WT_M2_Max_%s', dn);
-    headers{end+1} = sprintf('MRM_Rxns_%s', dn);
-    headers{end+1} = sprintf('MRM_Growth_%s', dn);
-    headers{end+1} = sprintf('MRM_M1_Min_%s', dn);
-    headers{end+1} = sprintf('MRM_M1_Max_%s', dn);
-    headers{end+1} = sprintf('MRM_M2_Min_%s', dn);
-    headers{end+1} = sprintf('MRM_M2_Max_%s', dn);
+    headers{end+1} = sprintf('MRM_cut1_Rxns_%s', dn);
+    headers{end+1} = sprintf('MRM_cut1_Growth_%s', dn);
+    headers{end+1} = sprintf('MRM_cut1_M1_Min_%s', dn);
+    headers{end+1} = sprintf('MRM_cut1_M1_Max_%s', dn);
+    headers{end+1} = sprintf('MRM_cut1_M2_Min_%s', dn);
+    headers{end+1} = sprintf('MRM_cut1_M2_Max_%s', dn);
+    headers{end+1} = sprintf('MRM_cut05_Rxns_%s', dn);
+    headers{end+1} = sprintf('MRM_cut05_Growth_%s', dn);
+    headers{end+1} = sprintf('MRM_cut05_M1_Min_%s', dn);
+    headers{end+1} = sprintf('MRM_cut05_M1_Max_%s', dn);
+    headers{end+1} = sprintf('MRM_cut05_M2_Min_%s', dn);
+    headers{end+1} = sprintf('MRM_cut05_M2_Max_%s', dn);
 end
 
 if isempty(gcp('nocreate'))
@@ -180,15 +182,20 @@ parfor p = 1:nPairs
     end
 
     for d = 1:nDiets
-        col = 2 + (d-1)*12; 
+        col = 2 + (d-1)*18; 
         dietName = dietNames{d};
         
         WT_Rxns = NaN; WT_G = NaN; 
         WT_M1_Min = NaN; WT_M1_Max = NaN; 
         WT_M2_Min = NaN; WT_M2_Max = NaN;
-        MT_Rxns = NaN; MT_G = NaN; 
-        MT_M1_Min = NaN; MT_M1_Max = NaN; 
-        MT_M2_Min = NaN; MT_M2_Max = NaN;
+        
+        MT_cut1_Rxns = NaN; MT_cut1_G = NaN; 
+        MT_cut1_M1_Min = NaN; MT_cut1_M1_Max = NaN; 
+        MT_cut1_M2_Min = NaN; MT_cut1_M2_Max = NaN;
+        
+        MT_cut05_Rxns = NaN; MT_cut05_G = NaN; 
+        MT_cut05_M1_Min = NaN; MT_cut05_M1_Max = NaN; 
+        MT_cut05_M2_Min = NaN; MT_cut05_M2_Max = NaN;
         
         % --- EVALUATE WILD-TYPE COMMUNITY ---
         try
