@@ -48,13 +48,13 @@ nModels = numel(model_files);
 Pairs = nchoosek(1:nModels, 2);
 nPairs = size(Pairs, 1);
 
-dietNames = {'high_fiber_vmh', 'Mediterranian', 'Unhealthy', 'vegetarian_diet', 'Western_VMH', 'No_Diet'};
+dietNames = {'Unsupplemented'};
 nDiets = numel(dietNames);
 DietTables = cell(nDiets, 1);
 
 % Load Diet Constraints
 for d = 1:nDiets
-    if strcmp(dietNames{d}, 'No_Diet')
+    if strcmp(dietNames{d}, 'Unsupplemented')
         DietTables{d}.rxns = [];
         DietTables{d}.lbs  = [];
         continue;
@@ -73,12 +73,16 @@ for d = 1:nDiets
     dn = dietNames{d};
     headers{end+1} = sprintf('WT_Rxns_%s', dn);
     headers{end+1} = sprintf('WT_Growth_%s', dn);
-    headers{end+1} = sprintf('WT_M1_Growth_%s', dn);
-    headers{end+1} = sprintf('WT_M2_Growth_%s', dn);
+    headers{end+1} = sprintf('WT_M1_Min_%s', dn);
+    headers{end+1} = sprintf('WT_M1_Max_%s', dn);
+    headers{end+1} = sprintf('WT_M2_Min_%s', dn);
+    headers{end+1} = sprintf('WT_M2_Max_%s', dn);
     headers{end+1} = sprintf('MRM_Rxns_%s', dn);
     headers{end+1} = sprintf('MRM_Growth_%s', dn);
-    headers{end+1} = sprintf('MRM_M1_Growth_%s', dn);
-    headers{end+1} = sprintf('MRM_M2_Growth_%s', dn);
+    headers{end+1} = sprintf('MRM_M1_Min_%s', dn);
+    headers{end+1} = sprintf('MRM_M1_Max_%s', dn);
+    headers{end+1} = sprintf('MRM_M2_Min_%s', dn);
+    headers{end+1} = sprintf('MRM_M2_Max_%s', dn);
 end
 
 if isempty(gcp('nocreate'))
@@ -115,6 +119,14 @@ parfor p = 1:nPairs
         model1_WT.rxns = strtrim(model1_WT.rxns);
         model2_WT.rxns = strtrim(model2_WT.rxns);
         
+        assert(isfield(model1_WT, 'csense') && length(model1_WT.csense) == size(model1_WT.S,1));
+        assert(isfield(model2_WT, 'csense') && length(model2_WT.csense) == size(model2_WT.S,1));
+        
+        ex1 = startsWith(model1_WT.rxns, 'EX_');
+        model1_WT.lb(ex1) = -1000; model1_WT.ub(ex1) = 1000;
+        ex2 = startsWith(model2_WT.rxns, 'EX_');
+        model2_WT.lb(ex2) = -1000; model2_WT.ub(ex2) = 1000;
+        
         bio1_WT = model1_WT.rxns(model1_WT.c ~= 0);
         bio2_WT = model2_WT.rxns(model2_WT.c ~= 0);
 
@@ -123,7 +135,7 @@ parfor p = 1:nPairs
             continue;
         end
         
-        removeFields = {'C','ctrs','d','dsense','osense','osenseStr','metCharge','metCharges','metFormulas','metNames','metCHEBIID','metHMDBID','metKEGGID','metPubChemID','metSmile','metSmiles','metInChIString','metInchiString','metSEEDID','rules','grRules','rxnGeneMat','genes','geneNames','subSystems','proteinClasses','comments','rxnConfidenceScores','citations','ecNumbers'};
+        removeFields = {'osense','osenseStr','metCharge','metCharges','metFormulas','metNames','metCHEBIID','metHMDBID','metKEGGID','metPubChemID','metSmile','metSmiles','metInChIString','metInchiString','metSEEDID','rules','grRules','rxnGeneMat','genes','geneNames','subSystems','proteinClasses','comments','rxnConfidenceScores','citations','ecNumbers'};
         for f = 1:numel(removeFields)
             if isfield(model1_WT,removeFields{f}), model1_WT = rmfield(model1_WT,removeFields{f}); end
             if isfield(model2_WT,removeFields{f}), model2_WT = rmfield(model2_WT,removeFields{f}); end
@@ -148,26 +160,19 @@ parfor p = 1:nPairs
         WT_Community.c(bioIdx1_WT) = 1;
         WT_Community.c(bioIdx2_WT) = 1;
         
-        % BIOLOGICAL COEXISTENCE & RATIO COUPLING
-        % Allow flexibility but prevent the "Winner-Takes-All" LP artifact
-        % by constraining the growth ratio to max 10:1 in either direction.
-        WT_Community.lb(bioIdx1_WT) = 1e-6;
-        WT_Community.lb(bioIdx2_WT) = 1e-6;
-        
-        [m_wt, ~] = size(WT_Community.S);
-        WT_Community.S(m_wt+1, bioIdx1_WT) = 1;
-        WT_Community.S(m_wt+1, bioIdx2_WT) = -10;
-        WT_Community.b(m_wt+1) = 0;
-        WT_Community.mets{m_wt+1} = 'CouplingConstraint_1to2';
-        if isfield(WT_Community, 'csense'), WT_Community.csense(m_wt+1) = 'L'; end
-        
-        WT_Community.S(m_wt+2, bioIdx1_WT) = -10;
-        WT_Community.S(m_wt+2, bioIdx2_WT) = 1;
-        WT_Community.b(m_wt+2) = 0;
-        WT_Community.mets{m_wt+2} = 'CouplingConstraint_2to1';
-        if isfield(WT_Community, 'csense'), WT_Community.csense(m_wt+2) = 'L'; end
+        % BIOLOGICAL COEXISTENCE
+        WT_Community.lb(bioIdx1_WT) = 0.001;
+        WT_Community.lb(bioIdx2_WT) = 0.001;
         
         WT_Community.rxns = strtrim(WT_Community.rxns);
+        
+        % Assert IEX bounds
+        iexIdxWT = startsWith(WT_Community.rxns, 'model1_IEX_') | startsWith(WT_Community.rxns, 'model2_IEX_');
+        assert(all(WT_Community.lb(iexIdxWT) == -1000) && all(WT_Community.ub(iexIdxWT) == 1000));
+        
+        % Close lumen biomass transfer
+        exBioIdxWT = contains(WT_Community.rxns, 'EX_') & contains(WT_Community.rxns, 'biomass') & contains(WT_Community.rxns, '[u]');
+        WT_Community.lb(exBioIdxWT) = 0; WT_Community.ub(exBioIdxWT) = 0;
        
     catch ME
         WorkerResults{p} = LocalRow;
@@ -175,11 +180,15 @@ parfor p = 1:nPairs
     end
 
     for d = 1:nDiets
-        col = 2 + (d-1)*8; 
+        col = 2 + (d-1)*12; 
         dietName = dietNames{d};
         
-        WT_Rxns = NaN; WT_G = NaN; WT_M1 = NaN; WT_M2 = NaN;
-        MT_Rxns = NaN; MT_G = NaN; MT_M1 = NaN; MT_M2 = NaN;
+        WT_Rxns = NaN; WT_G = NaN; 
+        WT_M1_Min = NaN; WT_M1_Max = NaN; 
+        WT_M2_Min = NaN; WT_M2_Max = NaN;
+        MT_Rxns = NaN; MT_G = NaN; 
+        MT_M1_Min = NaN; MT_M1_Max = NaN; 
+        MT_M2_Min = NaN; MT_M2_Max = NaN;
         
         % --- EVALUATE WILD-TYPE COMMUNITY ---
         try
@@ -190,10 +199,25 @@ parfor p = 1:nPairs
             solWT = optimizeCbModel(WT_Current, 'max', 'one');
             WT_Rxns = numel(WT_Current.rxns);
             
-            if ~isempty(solWT) && solWT.stat == 1 && solWT.f >= 1e-6
+            if ~isempty(solWT) && solWT.stat == 1 && solWT.f >= 0.001
                 WT_G  = solWT.f;
-                WT_M1 = solWT.x(bioIdx1_WT);
-                WT_M2 = solWT.x(bioIdx2_WT);
+                
+                [m_wt_fva, ~] = size(WT_Current.S);
+                WT_Current.S(m_wt_fva+1, bioIdx1_WT) = 1;
+                WT_Current.S(m_wt_fva+1, bioIdx2_WT) = 1;
+                WT_Current.b(m_wt_fva+1) = solWT.f;
+                WT_Current.csense(m_wt_fva+1) = 'E';
+                WT_Current.mets{m_wt_fva+1} = 'CommunityBiomassFix';
+                
+                WT_Current.c(:) = 0;
+                WT_Current.c(bioIdx1_WT) = 1;
+                solMin = optimizeCbModel(WT_Current, 'min'); WT_M1_Min = solMin.f;
+                solMax = optimizeCbModel(WT_Current, 'max'); WT_M1_Max = solMax.f;
+                
+                WT_Current.c(:) = 0;
+                WT_Current.c(bioIdx2_WT) = 1;
+                solMin = optimizeCbModel(WT_Current, 'min'); WT_M2_Min = solMin.f;
+                solMax = optimizeCbModel(WT_Current, 'max'); WT_M2_Max = solMax.f;
             end
         catch ME
         end
@@ -229,6 +253,14 @@ parfor p = 1:nPairs
                     
                     model1_MT.rxns = strtrim(model1_MT.rxns);
                     model2_MT.rxns = strtrim(model2_MT.rxns);
+                    
+                    assert(isfield(model1_MT, 'csense') && length(model1_MT.csense) == size(model1_MT.S,1));
+                    assert(isfield(model2_MT, 'csense') && length(model2_MT.csense) == size(model2_MT.S,1));
+                    
+                    ex1_MT = startsWith(model1_MT.rxns, 'EX_');
+                    model1_MT.lb(ex1_MT) = -1000; model1_MT.ub(ex1_MT) = 1000;
+                    ex2_MT = startsWith(model2_MT.rxns, 'EX_');
+                    model2_MT.lb(ex2_MT) = -1000; model2_MT.ub(ex2_MT) = 1000;
                     
                     bio1_MT = find(model1_MT.c~=0, 1);
                     bio2_MT = find(model2_MT.c~=0, 1);
@@ -270,24 +302,19 @@ parfor p = 1:nPairs
                     MT_Community.c(bioIdx1_MT) = 1;
                     MT_Community.c(bioIdx2_MT) = 1;
                     
-                    % BIOLOGICAL COEXISTENCE FLOOR & RATIO COUPLING for MRM
-                    MT_Community.lb(bioIdx1_MT) = 1e-6;
-                    MT_Community.lb(bioIdx2_MT) = 1e-6;
-                    
-                    [m_mt, ~] = size(MT_Community.S);
-                    MT_Community.S(m_mt+1, bioIdx1_MT) = 1;
-                    MT_Community.S(m_mt+1, bioIdx2_MT) = -10;
-                    MT_Community.b(m_mt+1) = 0;
-                    MT_Community.mets{m_mt+1} = 'CouplingConstraint_1to2';
-                    if isfield(MT_Community, 'csense'), MT_Community.csense(m_mt+1) = 'L'; end
-                    
-                    MT_Community.S(m_mt+2, bioIdx1_MT) = -10;
-                    MT_Community.S(m_mt+2, bioIdx2_MT) = 1;
-                    MT_Community.b(m_mt+2) = 0;
-                    MT_Community.mets{m_mt+2} = 'CouplingConstraint_2to1';
-                    if isfield(MT_Community, 'csense'), MT_Community.csense(m_mt+2) = 'L'; end
+                    % BIOLOGICAL COEXISTENCE FLOOR
+                    MT_Community.lb(bioIdx1_MT) = 0.001;
+                    MT_Community.lb(bioIdx2_MT) = 0.001;
                     
                     MT_Community.rxns = strtrim(MT_Community.rxns);
+                    
+                    % Assert IEX bounds
+                    iexIdxMT = startsWith(MT_Community.rxns, 'model1_IEX_') | startsWith(MT_Community.rxns, 'model2_IEX_');
+                    assert(all(MT_Community.lb(iexIdxMT) == -1000) && all(MT_Community.ub(iexIdxMT) == 1000));
+                    
+                    % Close lumen biomass transfer
+                    exBioIdxMT = contains(MT_Community.rxns, 'EX_') & contains(MT_Community.rxns, 'biomass') & contains(MT_Community.rxns, '[u]');
+                    MT_Community.lb(exBioIdxMT) = 0; MT_Community.ub(exBioIdxMT) = 0;
                     
                     MT_Current = MT_Community;
                     MT_Current = applyDiet(MT_Current, DietTables{d}, '[u]', dietName);
@@ -295,10 +322,25 @@ parfor p = 1:nPairs
                     solMT = optimizeCbModel(MT_Current, 'max', 'one');
                     MT_Rxns = numel(MT_Current.rxns);
                     
-                    if ~isempty(solMT) && solMT.stat == 1 && solMT.f >= 1e-6
+                    if ~isempty(solMT) && solMT.stat == 1 && solMT.f >= 0.001
                         MT_G  = solMT.f;
-                        MT_M1 = solMT.x(bioIdx1_MT);
-                        MT_M2 = solMT.x(bioIdx2_MT);
+                        
+                        [m_mt_fva, ~] = size(MT_Current.S);
+                        MT_Current.S(m_mt_fva+1, bioIdx1_MT) = 1;
+                        MT_Current.S(m_mt_fva+1, bioIdx2_MT) = 1;
+                        MT_Current.b(m_mt_fva+1) = solMT.f;
+                        MT_Current.csense(m_mt_fva+1) = 'E';
+                        MT_Current.mets{m_mt_fva+1} = 'CommunityBiomassFix';
+                        
+                        MT_Current.c(:) = 0;
+                        MT_Current.c(bioIdx1_MT) = 1;
+                        solMin = optimizeCbModel(MT_Current, 'min'); MT_M1_Min = solMin.f;
+                        solMax = optimizeCbModel(MT_Current, 'max'); MT_M1_Max = solMax.f;
+                        
+                        MT_Current.c(:) = 0;
+                        MT_Current.c(bioIdx2_MT) = 1;
+                        solMin = optimizeCbModel(MT_Current, 'min'); MT_M2_Min = solMin.f;
+                        solMax = optimizeCbModel(MT_Current, 'max'); MT_M2_Max = solMax.f;
                     end
                 end
             end
@@ -307,12 +349,16 @@ parfor p = 1:nPairs
         
         LocalRow{col}   = WT_Rxns;
         LocalRow{col+1} = WT_G;
-        LocalRow{col+2} = WT_M1;
-        LocalRow{col+3} = WT_M2;
-        LocalRow{col+4} = MT_Rxns;
-        LocalRow{col+5} = MT_G;
-        LocalRow{col+6} = MT_M1;
-        LocalRow{col+7} = MT_M2;
+        LocalRow{col+2} = WT_M1_Min;
+        LocalRow{col+3} = WT_M1_Max;
+        LocalRow{col+4} = WT_M2_Min;
+        LocalRow{col+5} = WT_M2_Max;
+        LocalRow{col+6} = MT_Rxns;
+        LocalRow{col+7} = MT_G;
+        LocalRow{col+8} = MT_M1_Min;
+        LocalRow{col+9} = MT_M1_Max;
+        LocalRow{col+10} = MT_M2_Min;
+        LocalRow{col+11} = MT_M2_Max;
     end
     
     WorkerResults{p} = LocalRow;
